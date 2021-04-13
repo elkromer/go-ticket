@@ -1,3 +1,3 @@
-module hkrome.com/xlator
+module hkrome.com/ticketserver
 
 go 1.16
