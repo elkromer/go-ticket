@@ -113,6 +113,31 @@ func (s *Server) list(response http.ResponseWriter, request *http.Request) {
 		// serialize the incoming data
 		// update the list item with the specified id
 		// 200 OK if successful, 400 Bad request otherwise
+		// Add a new ticket to the collection
+		body, error := ioutil.ReadAll(request.Body)
+		if error != nil {
+			fmt.Println("Io error: ", error)
+		}
+
+		ticket, jerr := byteToTicket(body)
+		if jerr != nil {
+			BadRequest(response, request)
+			return
+		}
+
+		// Tell the board manager to modify the ticket
+		replyChannel := make(chan CommandResponse) 
+		s.Commands <- Command{"modify", &ticket, ticket.Id, replyChannel}
+		cmdResponse := <- replyChannel
+
+		// Expect to get the ticket back over the channel
+		if len(cmdResponse.Bytes) == 0 {
+			BadRequest(response, request)
+			return
+		} else {
+			fmt.Println("Modified ticket ", ticket.Id)
+		}
+
 	}
 }
 // Handles incoming get requests
@@ -132,11 +157,16 @@ func (s *Server) get(response http.ResponseWriter, request *http.Request) {
 		s.Commands <- Command{"get", &Ticket{}, id, replyChannel}
 		cmdResponse := <- replyChannel
 
-		if len(cmdResponse.Bytes) == 0 {
+		if cmdResponse.Ticket.Id == 0 {
 			BadRequest(response, request)
 			return
 		} else {
-			response.Write(cmdResponse.Bytes)
+			jsonBytes, jerr := ticketToByte(cmdResponse.Ticket)
+			if jerr != nil {
+				fmt.Println("Error marshalling JSON: ", jerr)
+			} else {
+				response.Write(jsonBytes)
+			}
 		}
 	}
 }
@@ -176,41 +206,54 @@ func startBoardManager() chan<- Command {
 		// Any delays incurred here will impact every goroutine waiting on a reply from the board manager
 		for cmd := range Commands {
 			switch cmd.Type {
-			case "add": // Add the incoming ticket to the map of tickets. The handler
-				// expects a non-empty byte array from the response channel to indicate success.
-				if debugLogging { fmt.Println("BoardManager: Add") }
-				Tickets[cmd.Ticket.Id] = cmd.Ticket
-				cmd.ReplyChannel <- CommandResponse{Bytes: []byte{ 0 }}
-				if debugLogging { fmt.Println("BoardManager: Tickets =", Tickets) }				
+			case "add": 
+				// Add the incoming ticket to the map of tickets. 
+				if Key, found := Tickets[cmd.Ticket.Id]; found {
+					if debugLogging { fmt.Printf("BoardManager: Key %d already exists.\n", Key.Id) }
+					cmd.ReplyChannel <- CommandResponse{Bytes: []byte{}} // Error
+				} else {
+					if debugLogging { fmt.Printf("BoardManager: Adding new ticket.\n") }
+					Tickets[cmd.Ticket.Id] = cmd.Ticket
+					cmd.ReplyChannel <- CommandResponse{Bytes: []byte{ 0 }}
+				}
+				if debugLogging { fmt.Println("BoardManager: Tickets =", Tickets) }
 			case "list": 
-				// TODO: Return a list of tickets
+				// Returns a list of tickets
 				if debugLogging { fmt.Println("BoardManager: List") }
-
 				for _, t := range Tickets {
 					cmd.ReplyChannel <- CommandResponse{Ticket: t}
 				}
-
+				// Once finished send an empty response
 				cmd.ReplyChannel <- CommandResponse{}
-				fmt.Println("BoardManager: Done Listing")
 
 			case "get": 
+				// Returns a specific ticket
 				if debugLogging { fmt.Println("BoardManager: Get") }
-				// TODO: Move the heavy processing out of here
 				if Val, ok := Tickets[cmd.TicketId]; ok {
-					jsonBytes, jerr := ticketToByte(Val) // This needs to be tested for speed
-					if jerr != nil {
-						cmd.ReplyChannel <- CommandResponse{Bytes: []byte{}}
-					} else {
-						cmd.ReplyChannel <- CommandResponse{Bytes: jsonBytes}
-					}
+					if debugLogging { fmt.Println("BoardManager: Returning ticket ", cmd.TicketId) }
+					cmd.ReplyChannel <- CommandResponse{Ticket: Val}
 				} else {
-					fmt.Println("Error getting ticket:", ok)
-					cmd.ReplyChannel <- CommandResponse{Bytes: []byte{}}
+					fmt.Printf("BoardManager: Ticket %d not found.\n", cmd.TicketId)
+					cmd.ReplyChannel <- CommandResponse{Ticket: &Ticket{}}
 				}
 			case "modify":
-				// TODO: Write the updated ticket to the map of tickets.
+				if Key, found := Tickets[cmd.Ticket.Id]; found {
+					if debugLogging { fmt.Printf("BoardManager: Updating ticket %d.\n", Key.Id) }
+					var t *Ticket = Tickets[cmd.Ticket.Id]
+					t.ResponseType = cmd.Ticket.ResponseType
+					t.Response = cmd.Ticket.Response
+					if debugLogging { fmt.Println("BoardManager: Successfully updated ticket.\n", t) }
+					cmd.ReplyChannel <- CommandResponse{Bytes: []byte{ 0 }}
+				} else {
+					if debugLogging { fmt.Printf("BoardManager: Ticket does not exist.\n") }
+					cmd.ReplyChannel <- CommandResponse{Bytes: []byte{}} // Error
+				}
+				if debugLogging { fmt.Println("BoardManager: Tickets =", Tickets) }
 			default:
-				fmt.Println("BoardManager: unknown command", cmd.Type)
+				fmt.Println("BoardManager: Listing tickets...")
+				for _, t := range Tickets {
+					fmt.Println("Ticket: ", t)
+				}
 			}
 		}
 	}()
