@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"encoding/json"
 	"io/ioutil"
@@ -20,7 +21,7 @@ var extraLogging bool = false
 type Command struct {
 	Type string
 	Ticket *Ticket
-	TicketId int64
+	TicketId int64 // Board manager needs this for GET requests
 	ReplyChannel chan CommandResponse
 }
 // Another primitive for passing data from the board manager
@@ -194,6 +195,21 @@ func ticketToByte(ticket *Ticket) ([]byte, error) {
 	return b, jsonerr
 }
 
+///////////
+// boardManager Methods
+///////////
+func modifyTicket(t *Ticket, messageType string, message string, responseType string, response string) error {
+	if (t != nil) {
+		t.MessageType = messageType;
+		t.Message = message;
+		t.ResponseType = responseType;
+		t.Response = response;
+	} else {
+		return errors.New("Error: Attempted modification on a nil ticket.");
+	}
+	return nil;
+}
+
 // This is where the magic happens. Spins up a goroutine which constantly processes jobs from the handlers
 func startBoardManager() chan<- Command {
 	Tickets := make(map[int64]*Ticket)
@@ -239,11 +255,15 @@ func startBoardManager() chan<- Command {
 			case "modify":
 				if Key, found := Tickets[cmd.Ticket.Id]; found {
 					if debugLogging { fmt.Printf("BoardManager: Updating ticket %d.\n", Key.Id) }
-					var t *Ticket = Tickets[cmd.Ticket.Id]
-					t.ResponseType = cmd.Ticket.ResponseType
-					t.Response = cmd.Ticket.Response
-					if debugLogging { fmt.Println("BoardManager: Successfully updated ticket.\n", t) }
-					cmd.ReplyChannel <- CommandResponse{Bytes: []byte{ 0 }}
+					ticket := Tickets[cmd.Ticket.Id]
+					err := modifyTicket(ticket, cmd.Ticket.MessageType, cmd.Ticket.Message, cmd.Ticket.ResponseType, cmd.Ticket.Response);
+					if (err != nil) {
+						fmt.Printf(err);
+						cmd.ReplyChannel <- CommandResponse{Bytes: []byte{}} // Error
+					} else {
+						if debugLogging { fmt.Println("BoardManager: Successfully updated ticket.\n", ticket) }
+						cmd.ReplyChannel <- CommandResponse{Bytes: []byte{ 0 }}
+					}
 				} else {
 					if debugLogging { fmt.Printf("BoardManager: Ticket does not exist.\n") }
 					cmd.ReplyChannel <- CommandResponse{Bytes: []byte{}} // Error
@@ -256,7 +276,7 @@ func startBoardManager() chan<- Command {
 				}
 			}
 		}
-	}()
+	}() // DO NOT REMOVE
 	return Commands
 }
 
