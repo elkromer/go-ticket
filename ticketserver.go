@@ -1,8 +1,9 @@
 package main
 
 import (
-	"errors"
 	"fmt"
+	"os"
+	"time"
 	"encoding/json"
 	"io/ioutil"
 	"net/http"
@@ -36,6 +37,7 @@ type Ticket struct {
 	Message 		string
 	ResponseType 	string
 	Response 		string
+	Complete		bool
 }
 // Represents the web server
 type Server struct {
@@ -148,6 +150,12 @@ func (s *Server) get(response http.ResponseWriter, request *http.Request) {
 	}
 
 	if request.Method == "GET" {
+		incomingOp := request.URL.Query().Get("op")
+		if (incomingOp == "export") {
+			s.Commands <- Command{"export", &Ticket{}, 0, nil}
+			return;
+		}
+
 		incomingId := request.URL.Query().Get("id")
 		id, converr := strconv.ParseInt(incomingId, 10, 64)
 		if converr != nil {
@@ -198,16 +206,40 @@ func ticketToByte(ticket *Ticket) ([]byte, error) {
 ///////////
 // boardManager Methods
 ///////////
-func modifyTicket(t *Ticket, messageType string, message string, responseType string, response string) error {
+func exportTickets(tickets map[int64]*Ticket) {
+	currentTime := time.Now();
+	exportFolder := "tickets_" + currentTime.Format("2006_01_02_15_04_05")
+	os.Mkdir(exportFolder, 0755);
+
+	for _, t := range tickets {
+		fmt.Printf("Exporting: [%d]\n", t.Id)
+		dat := []byte("Ticket " + strconv.FormatInt(t.Id, 16) + "\n" +
+					  "messageType=" + t.MessageType + "\n" +
+					  "message=" + t.Message + "\n" +
+					  "responseType=" + t.ResponseType + "\n" +
+					  "response=" + t.Response + "\n" +
+					  "complete=" + strconv.FormatBool(t.Complete) + "\n");
+		err := os.WriteFile(exportFolder +  "/ticket#" + strconv.FormatInt(t.Id, 16), dat, 0644);
+		if (err != nil) {
+			fmt.Printf("Error: " + err.Error() + "\n");
+		}
+	}
+
+	for i := range tickets {
+		delete(tickets, i)
+	}
+}
+
+func modifyTicket(t *Ticket, messageType string, message string, responseType string, response string, complete bool) {
 	if (t != nil) {
 		t.MessageType = messageType;
 		t.Message = message;
 		t.ResponseType = responseType;
 		t.Response = response;
+		t.Complete = complete;
 	} else {
-		return errors.New("Error: Attempted modification on a nil ticket.");
+		fmt.Printf("Error: Attempted modification on a nil ticket.");
 	}
-	return nil;
 }
 
 // This is where the magic happens. Spins up a goroutine which constantly processes jobs from the handlers
@@ -256,19 +288,22 @@ func startBoardManager() chan<- Command {
 				if Key, found := Tickets[cmd.Ticket.Id]; found {
 					if debugLogging { fmt.Printf("BoardManager: Updating ticket %d.\n", Key.Id) }
 					ticket := Tickets[cmd.Ticket.Id]
-					err := modifyTicket(ticket, cmd.Ticket.MessageType, cmd.Ticket.Message, cmd.Ticket.ResponseType, cmd.Ticket.Response);
-					if (err != nil) {
-						fmt.Printf(err);
-						cmd.ReplyChannel <- CommandResponse{Bytes: []byte{}} // Error
-					} else {
-						if debugLogging { fmt.Println("BoardManager: Successfully updated ticket.\n", ticket) }
-						cmd.ReplyChannel <- CommandResponse{Bytes: []byte{ 0 }}
-					}
+					// Spinning up a go routine is **PROBABLY** a bad idea. 
+					// The whole point of using channels is for synchronization.
+					// The go routine would start and execute later while execution continues.
+					// go modifyTicket(ticket, cmd.Ticket.MessageType, cmd.Ticket.Message, cmd.Ticket.ResponseType, cmd.Ticket.Response, cmd.Ticket.Complete);
+					modifyTicket(ticket, cmd.Ticket.MessageType, cmd.Ticket.Message, cmd.Ticket.ResponseType, cmd.Ticket.Response, cmd.Ticket.Complete);
+					if debugLogging { fmt.Println("BoardManager: Modify done.\n", ticket) }
+					cmd.ReplyChannel <- CommandResponse{Bytes: []byte{ 0 }}
 				} else {
 					if debugLogging { fmt.Printf("BoardManager: Ticket does not exist.\n") }
 					cmd.ReplyChannel <- CommandResponse{Bytes: []byte{}} // Error
 				}
 				if debugLogging { fmt.Println("BoardManager: Tickets =", Tickets) }
+			case "export":
+				if debugLogging { fmt.Printf("BoardManager: Exporting %d tickets...\n", len(Tickets)) }
+				exportTickets(Tickets);
+
 			default:
 				fmt.Println("BoardManager: Listing tickets...")
 				for _, t := range Tickets {
