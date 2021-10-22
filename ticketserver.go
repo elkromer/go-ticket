@@ -78,7 +78,7 @@ func (s *Server) add(response http.ResponseWriter, request *http.Request) {
 			BadRequest(response, request)
 			return
 		} else {
-			fmt.Println("Added ticket ", ticket.Id)
+			fmt.Println("Added ticket [" + strconv.FormatInt(ticket.Id, 10) + "]")
 		}
 	}
 }
@@ -90,7 +90,6 @@ func (s *Server) list(response http.ResponseWriter, request *http.Request) {
 
 	if request.Method == "GET" {
 		// communicate with the board manager to return the list of tickets
-		// TODO: Add a limit so only a certain number of tickets will be returned
 		if len(string(request.URL.Query().Get("id"))) != 0 {
 			BadRequest(response, request)
 			return
@@ -156,8 +155,8 @@ func (s *Server) get(response http.ResponseWriter, request *http.Request) {
 
 	if request.Method == "GET" {
 		incomingOp := request.URL.Query().Get("op")
-		if (incomingOp == "export") {
-			s.Commands <- Command{"export", &Ticket{}, 0, nil}
+		if (len(incomingOp) > 0) {
+			s.Commands <- Command{incomingOp, &Ticket{}, 0, nil}
 			return;
 		}
 
@@ -215,7 +214,7 @@ func exportTickets(tickets map[int64]*Ticket) {
 	os.Mkdir(exportFolder, 0755);
 
 	for _, t := range tickets {
-		fmt.Printf("Exporting: [%d]\n", t.Id)
+		fmt.Printf("Exporting [%d]\n", t.Id)
 		dat := []byte("messageType=" + t.MessageType + "\n" +
 					  "message=" + t.Message + "\n" +
 					  "responseType=" + t.ResponseType + "\n" +
@@ -279,6 +278,8 @@ func startBoardManager() chan<- Command {
 				if debugLogging { fmt.Println("BoardManager: Tickets =", Tickets) }
 
 			// Respond to the handler with a list of tickets
+			// TODO: Add a limit so only a certain number of tickets will be returned and
+			// the channel won't be blocked for others. This will depend on the use-case.
 			case "list": 
 				if debugLogging { fmt.Println("BoardManager: List") }
 				for _, t := range Tickets {
@@ -319,6 +320,10 @@ func startBoardManager() chan<- Command {
 			case "export":
 				if debugLogging { fmt.Printf("BoardManager: Exporting %d tickets...\n", len(Tickets)) }
 				exportTickets(Tickets);
+			
+			// Log statistics
+			case "stat":
+				fmt.Printf("Tickets=%d\n", len(Tickets));
 
 			// Debugging
 			default:
@@ -365,7 +370,7 @@ func main() {
 	// 	"messageType": "binary", 
 	// 	"message": "1AD3F5DC341EE61ABDF9789B32FEDCBA"
 	// }`)
-	
+
 	cmdchan := startBoardManager()
 	var server Server = Server{cmdchan}
 	
