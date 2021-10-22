@@ -11,26 +11,27 @@ import (
 	"strconv"
 )
 
-var debugLogging bool = true
-var extraLogging bool = false
+var debugLogging bool = false
 
 //////////
 // Structs
 //////////
 
-// A concurrency primitive to pass data to the board manager
+// Concurrency primitive
 type Command struct {
 	Type string
 	Ticket *Ticket
-	TicketId int64 // Board manager needs this for GET requests
+	TicketId int64 // Board manager needs this to index into the Ticket map
 	ReplyChannel chan CommandResponse
 }
-// Another primitive for passing data from the board manager
+
+// Response primitive
 type CommandResponse struct {
 	Bytes []byte
 	Ticket *Ticket
 }
-// Represents a single request for translation and the translator's response.
+
+// The control structure
 type Ticket struct {
 	Id 				int64
 	MessageType 	string
@@ -39,11 +40,16 @@ type Ticket struct {
 	Response 		string
 	Complete		bool
 }
-// Represents the web server
+
+// The server structure
 type Server struct {
 	Commands chan<- Command
 }
-// Handles incoming add requests
+
+//////////
+// Handlers
+//////////
+
 func (s *Server) add(response http.ResponseWriter, request *http.Request) {
 	if debugLogging { 
 		fmt.Println("Received "+request.RequestURI+" from "+request.RemoteAddr) 
@@ -76,7 +82,7 @@ func (s *Server) add(response http.ResponseWriter, request *http.Request) {
 		}
 	}
 }
-// Handles incoming list requests
+
 func (s *Server) list(response http.ResponseWriter, request *http.Request) {
 	if debugLogging { 
 		fmt.Println("Received "+request.RequestURI+" from "+request.RemoteAddr) 
@@ -104,7 +110,6 @@ func (s *Server) list(response http.ResponseWriter, request *http.Request) {
 					return
 				}
 				dataAccum = append(dataAccum, ticketBytes...)
-				if extraLogging == true { fmt.Println("Accumulating... ", string(dataAccum)) }
 			} else {
 				break
 			}
@@ -143,7 +148,7 @@ func (s *Server) list(response http.ResponseWriter, request *http.Request) {
 
 	}
 }
-// Handles incoming get requests
+
 func (s *Server) get(response http.ResponseWriter, request *http.Request) {
 	if debugLogging { 
 		fmt.Println("Received "+request.RequestURI+" from "+request.RemoteAddr) 
@@ -203,9 +208,7 @@ func ticketToByte(ticket *Ticket) ([]byte, error) {
 	return b, jsonerr
 }
 
-///////////
-// boardManager Methods
-///////////
+// Write contents of the map to files then delete the entries
 func exportTickets(tickets map[int64]*Ticket) {
 	currentTime := time.Now();
 	exportFolder := "tickets_" + currentTime.Format("2006_01_02_15_04_05")
@@ -213,8 +216,7 @@ func exportTickets(tickets map[int64]*Ticket) {
 
 	for _, t := range tickets {
 		fmt.Printf("Exporting: [%d]\n", t.Id)
-		dat := []byte("Ticket " + strconv.FormatInt(t.Id, 16) + "\n" +
-					  "messageType=" + t.MessageType + "\n" +
+		dat := []byte("messageType=" + t.MessageType + "\n" +
 					  "message=" + t.Message + "\n" +
 					  "responseType=" + t.ResponseType + "\n" +
 					  "response=" + t.Response + "\n" +
@@ -230,6 +232,7 @@ func exportTickets(tickets map[int64]*Ticket) {
 	}
 }
 
+// Modify the entry t with the values specified
 func modifyTicket(t *Ticket, messageType string, message string, responseType string, response string, complete bool) {
 	if (t != nil) {
 		t.MessageType = messageType;
@@ -242,20 +245,29 @@ func modifyTicket(t *Ticket, messageType string, message string, responseType st
 	}
 }
 
-// This is where the magic happens. Spins up a goroutine which constantly processes jobs from the handlers
+///////////
+// Worker
+///////////
+
+// Starts a goroutine which constantly processes jobs from the command channel. 
 func startBoardManager() chan<- Command {
+
 	Tickets := make(map[int64]*Ticket)
 	Commands := make(chan Command)
 	
 	go func () {
+
 		if debugLogging { fmt.Println("BoardManager: Started") }
 		
-		// Read from the command channel forever. 
-		// Any delays incurred here will impact every goroutine waiting on a reply from the board manager
+		// Receive from the command channel forever. Handler goroutines will send commands via the 
+		// Command channel. When you read from a channel it waits until a value is there. When handlers send
+		// a value on the command channel the sender blocks until the receiver is ready to receive it.
 		for cmd := range Commands {
+
 			switch cmd.Type {
+
+			// Add the incoming ticket to the map
 			case "add": 
-				// Add the incoming ticket to the map of tickets. 
 				if Key, found := Tickets[cmd.Ticket.Id]; found {
 					if debugLogging { fmt.Printf("BoardManager: Key %d already exists.\n", Key.Id) }
 					cmd.ReplyChannel <- CommandResponse{Bytes: []byte{}} // Error
@@ -265,8 +277,9 @@ func startBoardManager() chan<- Command {
 					cmd.ReplyChannel <- CommandResponse{Bytes: []byte{ 0 }}
 				}
 				if debugLogging { fmt.Println("BoardManager: Tickets =", Tickets) }
+
+			// Respond to the handler with a list of tickets
 			case "list": 
-				// Returns a list of tickets
 				if debugLogging { fmt.Println("BoardManager: List") }
 				for _, t := range Tickets {
 					cmd.ReplyChannel <- CommandResponse{Ticket: t}
@@ -274,8 +287,8 @@ func startBoardManager() chan<- Command {
 				// Once finished send an empty response
 				cmd.ReplyChannel <- CommandResponse{}
 
+			// Respond to the handler with a specific ticket
 			case "get": 
-				// Returns a specific ticket
 				if debugLogging { fmt.Println("BoardManager: Get") }
 				if Val, ok := Tickets[cmd.TicketId]; ok {
 					if debugLogging { fmt.Println("BoardManager: Returning ticket ", cmd.TicketId) }
@@ -284,13 +297,14 @@ func startBoardManager() chan<- Command {
 					fmt.Printf("BoardManager: Ticket %d not found.\n", cmd.TicketId)
 					cmd.ReplyChannel <- CommandResponse{Ticket: &Ticket{}}
 				}
+			
+			// Modify a specific ticket
 			case "modify":
 				if Key, found := Tickets[cmd.Ticket.Id]; found {
 					if debugLogging { fmt.Printf("BoardManager: Updating ticket %d.\n", Key.Id) }
 					ticket := Tickets[cmd.Ticket.Id]
-					// Spinning up a go routine is **PROBABLY** a bad idea. 
-					// The whole point of using channels is for synchronization.
-					// The go routine would start and execute later while execution continues.
+					// Spinning up a go routine is **PROBABLY** a bad idea. The whole point of using channels is for 
+					// synchronizing access to the control structure. A go routine here would result in a data race
 					// go modifyTicket(ticket, cmd.Ticket.MessageType, cmd.Ticket.Message, cmd.Ticket.ResponseType, cmd.Ticket.Response, cmd.Ticket.Complete);
 					modifyTicket(ticket, cmd.Ticket.MessageType, cmd.Ticket.Message, cmd.Ticket.ResponseType, cmd.Ticket.Response, cmd.Ticket.Complete);
 					if debugLogging { fmt.Println("BoardManager: Modify done.\n", ticket) }
@@ -300,10 +314,13 @@ func startBoardManager() chan<- Command {
 					cmd.ReplyChannel <- CommandResponse{Bytes: []byte{}} // Error
 				}
 				if debugLogging { fmt.Println("BoardManager: Tickets =", Tickets) }
+
+			// Page out the tickets and clear the control structure
 			case "export":
 				if debugLogging { fmt.Printf("BoardManager: Exporting %d tickets...\n", len(Tickets)) }
 				exportTickets(Tickets);
 
+			// Debugging
 			default:
 				fmt.Println("BoardManager: Listing tickets...")
 				for _, t := range Tickets {
@@ -312,6 +329,7 @@ func startBoardManager() chan<- Command {
 			}
 		}
 	}() // DO NOT REMOVE
+
 	return Commands
 }
 
@@ -347,6 +365,7 @@ func main() {
 	// 	"messageType": "binary", 
 	// 	"message": "1AD3F5DC341EE61ABDF9789B32FEDCBA"
 	// }`)
+	
 	cmdchan := startBoardManager()
 	var server Server = Server{cmdchan}
 	
