@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"flag"
 	"os"
 	"time"
 	"encoding/json"
@@ -11,17 +12,15 @@ import (
 	"strconv"
 )
 
-var debugLogging bool = false
-
-//////////
-// Structs
-//////////
+/////////////////////////////
+//         Structs         //
+/////////////////////////////
 
 // Concurrency primitive
 type Command struct {
 	Type string
 	Ticket *Ticket
-	TicketId int64 // Board manager needs this to index into the Ticket map
+	TicketId int64 // Index into the map
 	ReplyChannel chan CommandResponse
 }
 
@@ -33,7 +32,7 @@ type CommandResponse struct {
 
 // The control structure
 type Ticket struct {
-	Id 				int64
+	Id  			int64
 	MessageType 	string
 	Message 		string
 	ResponseType 	string
@@ -41,18 +40,23 @@ type Ticket struct {
 	Complete		bool
 }
 
-// The server structure
+/////////////////////////////
+//         Server          //
+/////////////////////////////
+
 type Server struct {
 	Commands chan<- Command
+	quiet bool
+	verbose bool
 }
 
-//////////
-// Handlers
-//////////
+/////////////////////////////
+//        Handlers         //
+/////////////////////////////
 
 func (s *Server) add(response http.ResponseWriter, request *http.Request) {
-	if debugLogging { 
-		fmt.Println("Received "+request.RequestURI+" from "+request.RemoteAddr) 
+	if s.verbose { 
+		fmt.Println("Receive " + request.RemoteAddr + " ADD") 
 	}
 
 	if request.Method == "POST" {
@@ -78,17 +82,17 @@ func (s *Server) add(response http.ResponseWriter, request *http.Request) {
 			BadRequest(response, request)
 			return
 		} else {
-			fmt.Println("Added ticket [" + strconv.FormatInt(ticket.Id, 10) + "]")
+			fmt.Println("Done [" + strconv.FormatInt(ticket.Id, 10) + "]")
 		}
 	}
 }
 
 func (s *Server) list(response http.ResponseWriter, request *http.Request) {
-	if debugLogging { 
-		fmt.Println("Received "+request.RequestURI+" from "+request.RemoteAddr) 
-	}
-
 	if request.Method == "GET" {
+		if s.verbose { 
+			fmt.Println("Receive " + request.RemoteAddr + " LIST") 
+		}
+
 		// communicate with the board manager to return the list of tickets
 		if len(string(request.URL.Query().Get("id"))) != 0 {
 			BadRequest(response, request)
@@ -113,10 +117,14 @@ func (s *Server) list(response http.ResponseWriter, request *http.Request) {
 				break
 			}
 		}
-		if debugLogging == true { fmt.Printf("Sending Response: %s\n", string(dataAccum))}
+		if s.verbose == true { fmt.Printf("Sending Response: %s\n", string(dataAccum))}
 		response.Write(dataAccum)
 
 	} else if request.Method == "POST" {
+		if s.verbose { 
+			fmt.Println("Receive " + request.RemoteAddr + " MODIFY") 
+		}
+
 		// serialize the incoming data
 		// update the list item with the specified id
 		// 200 OK if successful, 400 Bad request otherwise
@@ -142,14 +150,14 @@ func (s *Server) list(response http.ResponseWriter, request *http.Request) {
 			BadRequest(response, request)
 			return
 		} else {
-			fmt.Println("Modified ticket ", ticket.Id)
+			fmt.Println("Done [" + strconv.FormatInt(ticket.Id, 10) + "]")
 		}
 
 	}
 }
 
 func (s *Server) get(response http.ResponseWriter, request *http.Request) {
-	if debugLogging { 
+	if s.verbose { 
 		fmt.Println("Received "+request.RequestURI+" from "+request.RemoteAddr) 
 	}
 
@@ -184,9 +192,9 @@ func (s *Server) get(response http.ResponseWriter, request *http.Request) {
 	}
 }
 
-//////////
-// Helpers
-//////////
+/////////////////////////////
+//        Methods          //
+/////////////////////////////
 
 // Converts an array of bytes to a Ticket
 func byteToTicket(rawBytes []byte) (Ticket, error) {
@@ -244,9 +252,9 @@ func modifyTicket(t *Ticket, messageType string, message string, responseType st
 	}
 }
 
-///////////
-// Worker
-///////////
+/////////////////////////////
+//         Worker          //
+/////////////////////////////
 
 // Starts a goroutine which constantly processes jobs from the command channel. 
 func startBoardManager() chan<- Command {
@@ -256,7 +264,7 @@ func startBoardManager() chan<- Command {
 	
 	go func () {
 
-		if debugLogging { fmt.Println("BoardManager: Started") }
+		// fmt.Println("BoardManager: Started")
 		
 		// Receive from the command channel forever. Handler goroutines will send commands via the 
 		// Command channel. When you read from a channel it waits until a value is there. When handlers send
@@ -268,20 +276,19 @@ func startBoardManager() chan<- Command {
 			// Add the incoming ticket to the map
 			case "add": 
 				if Key, found := Tickets[cmd.Ticket.Id]; found {
-					if debugLogging { fmt.Printf("BoardManager: Key %d already exists.\n", Key.Id) }
-					cmd.ReplyChannel <- CommandResponse{Bytes: []byte{}} // Error
+					cmd.ReplyChannel <- CommandResponse{Ticket: Key} // Error
 				} else {
-					if debugLogging { fmt.Printf("BoardManager: Adding new ticket.\n") }
+					// fmt.Printf("BoardManager: Adding new ticket.\n")
 					Tickets[cmd.Ticket.Id] = cmd.Ticket
 					cmd.ReplyChannel <- CommandResponse{Bytes: []byte{ 0 }}
 				}
-				if debugLogging { fmt.Println("BoardManager: Tickets =", Tickets) }
+				// fmt.Println("BoardManager: Tickets =", Tickets)
 
 			// Respond to the handler with a list of tickets
 			// TODO: Add a limit so only a certain number of tickets will be returned and
 			// the channel won't be blocked for others. This will depend on the use-case.
 			case "list": 
-				if debugLogging { fmt.Println("BoardManager: List") }
+				// fmt.Println("BoardManager: List")
 				for _, t := range Tickets {
 					cmd.ReplyChannel <- CommandResponse{Ticket: t}
 				}
@@ -290,47 +297,46 @@ func startBoardManager() chan<- Command {
 
 			// Respond to the handler with a specific ticket
 			case "get": 
-				if debugLogging { fmt.Println("BoardManager: Get") }
+				// fmt.Println("BoardManager: Get")
 				if Val, ok := Tickets[cmd.TicketId]; ok {
-					if debugLogging { fmt.Println("BoardManager: Returning ticket ", cmd.TicketId) }
+					// fmt.Println("BoardManager: Returning ticket ", cmd.TicketId)
 					cmd.ReplyChannel <- CommandResponse{Ticket: Val}
 				} else {
-					fmt.Printf("BoardManager: Ticket %d not found.\n", cmd.TicketId)
+					// fmt.Printf("BoardManager: Ticket %d not found.\n", cmd.TicketId)
 					cmd.ReplyChannel <- CommandResponse{Ticket: &Ticket{}}
 				}
 			
 			// Modify a specific ticket
 			case "modify":
 				if Key, found := Tickets[cmd.Ticket.Id]; found {
-					if debugLogging { fmt.Printf("BoardManager: Updating ticket %d.\n", Key.Id) }
-					ticket := Tickets[cmd.Ticket.Id]
+					// fmt.Printf("BoardManager: Updating ticket %d.\n", Key.Id)
 					// Spinning up a go routine is **PROBABLY** a bad idea. The whole point of using channels is for 
 					// synchronizing access to the control structure. A go routine here would result in a data race
 					// go modifyTicket(ticket, cmd.Ticket.MessageType, cmd.Ticket.Message, cmd.Ticket.ResponseType, cmd.Ticket.Response, cmd.Ticket.Complete);
-					modifyTicket(ticket, cmd.Ticket.MessageType, cmd.Ticket.Message, cmd.Ticket.ResponseType, cmd.Ticket.Response, cmd.Ticket.Complete);
-					if debugLogging { fmt.Println("BoardManager: Modify done.\n", ticket) }
+					modifyTicket(Key, cmd.Ticket.MessageType, cmd.Ticket.Message, cmd.Ticket.ResponseType, cmd.Ticket.Response, cmd.Ticket.Complete);
+					// fmt.Println("BoardManager: Modify done.\n", ticket)
 					cmd.ReplyChannel <- CommandResponse{Bytes: []byte{ 0 }}
 				} else {
-					if debugLogging { fmt.Printf("BoardManager: Ticket does not exist.\n") }
+					// fmt.Printf("BoardManager: Ticket does not exist.\n")
 					cmd.ReplyChannel <- CommandResponse{Bytes: []byte{}} // Error
 				}
-				if debugLogging { fmt.Println("BoardManager: Tickets =", Tickets) }
+				// fmt.Println("BoardManager: Tickets =", Tickets)
 
 			// Page out the tickets and clear the control structure
 			case "export":
-				if debugLogging { fmt.Printf("BoardManager: Exporting %d tickets...\n", len(Tickets)) }
+				// fmt.Printf("BoardManager: Exporting %d tickets...\n", len(Tickets))
 				exportTickets(Tickets);
 			
 			// Log statistics
 			case "stat":
-				fmt.Printf("Tickets=%d\n", len(Tickets));
+				// fmt.Printf("Tickets=%d\n", len(Tickets))
 
 			// Debugging
 			default:
-				fmt.Println("BoardManager: Listing tickets...")
-				for _, t := range Tickets {
-					fmt.Println("Ticket: ", t)
-				}
+				// fmt.Println("BoardManager: Listing tickets...")
+				// for _, t := range Tickets {
+				// 	fmt.Println("Ticket: ", t)
+				// }
 			}
 		}
 	}() // DO NOT REMOVE
@@ -338,9 +344,9 @@ func startBoardManager() chan<- Command {
 	return Commands
 }
 
-///////////
-// net/http Methods
-///////////
+/////////////////////////////
+//        Net/HTTP         //
+/////////////////////////////
 
 // A quick and easy method to respond with a BadRequest  
 func BadRequest(w http.ResponseWriter, r *http.Request) { 
@@ -360,26 +366,23 @@ func createHandler(thisHandler func(http.ResponseWriter, *http.Request)) http.Ha
 	}
 }
 
-///////////
-// main
-///////////
+/////////////////////////////
+//          main           //
+/////////////////////////////
 
 func main() {
-	// var jsonBlob = []byte(`{
-	// 	"id": 12345678, 
-	// 	"messageType": "binary", 
-	// 	"message": "1AD3F5DC341EE61ABDF9789B32FEDCBA"
-	// }`)
+	portVar    := flag.String("port", "8000", "a string")
+	quietVar   := flag.Bool("quiet", false, "a bool")
+	verboseVar := flag.Bool("verbose", false, "a bool")
+	flag.Parse()
 
 	cmdchan := startBoardManager()
-	var server Server = Server{cmdchan}
-	
+	var server Server = Server {Commands: cmdchan, quiet: *quietVar, verbose: *verboseVar}
 	http.HandleFunc("/add", createHandler(server.add))
 	http.HandleFunc("/list", createHandler(server.list))
 	http.HandleFunc("/get", createHandler(server.get))
 	
-	port := "8000"
-	error := http.ListenAndServe("localhost:"+port,nil)
+	error := http.ListenAndServe("localhost:" + *portVar, nil)
 	if error != nil {
 		fmt.Printf("Error: %s\n", error)
 	}
