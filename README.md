@@ -17,7 +17,7 @@ All tickets are stored in memory in a map based on the id. The operations of the
 
 `.\ticketserver.exe`
 
-## Add
+### Add
 
 To add a ticket to the server, issue a `POST` request to the `/add` endpoint. In the PostData, specify the JSON encoded ticket.
 
