@@ -1,5 +1,5 @@
 # go-ticket
-A simple ticket system in Go.
+Maintainer: Reese Krome
 
 ## Description
 A command-line application that listens on a designated port for ticket management operations. The server supports jwt-based authentication and allows clients to add, modify, and list tickets over HTTP. A "ticket" is just a data structure that stores a few different pieces of information:
