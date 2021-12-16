@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"regexp"
 	"strconv"
+	"strings"
 )
 
 /////////////////////////////
@@ -46,7 +47,6 @@ type Ticket struct {
 
 type Server struct {
 	Commands chan<- Command
-	quiet bool
 	verbose bool
 }
 
@@ -239,6 +239,49 @@ func exportTickets(tickets map[int64]*Ticket) {
 	}
 }
 
+// Read contents of files on disk into the map
+func importTickets(tickets map[int64]*Ticket, workingDir string) {
+	files, err := ioutil.ReadDir(workingDir)
+	if (err != nil) {
+		fmt.Println("Error opening import directory: " + err.Error())
+		return
+	}
+
+	for _, f := range files {
+		bytesRead, _ := ioutil.ReadFile(workingDir + f.Name())
+		fileContent := string(bytesRead)
+		lines := strings.Split(fileContent, "\n")
+
+		var t Ticket
+		idStr := strings.Split(f.Name(), "#")[1]
+		ticketId, _ := strconv.ParseInt(idStr, 16, 64)
+		t.Id = ticketId
+		
+		for _, l := range lines {
+			tokens := strings.Split(l, "=")
+			switch (tokens[0]) {
+			case "messageType":
+				t.MessageType = tokens[1]
+				break
+			case "message":
+				t.Message = tokens[1]
+				break
+			case "responseType":
+				t.ResponseType = tokens[1]
+				break
+			case "response":
+				t.Response = tokens[1]
+				break
+			case "complete":
+				result, _ := strconv.ParseBool(tokens[1])
+				t.Complete = result
+			}
+		}
+		tickets[t.Id] = &t
+		fmt.Println("Added Id=" + strconv.FormatInt(ticketId, 10))
+	}
+}
+
 // Modify the entry t with the values specified
 func modifyTicket(t *Ticket, messageType string, message string, responseType string, response string, complete bool) {
 	if (t != nil) {
@@ -257,11 +300,13 @@ func modifyTicket(t *Ticket, messageType string, message string, responseType st
 /////////////////////////////
 
 // Starts a goroutine which constantly processes jobs from the command channel. 
-func startBoardManager() chan<- Command {
+func startBoardManager(importDir string) chan<- Command {
 
 	Tickets := make(map[int64]*Ticket)
 	Commands := make(chan Command)
 	
+	if (len(importDir) > 0 ) { importTickets(Tickets, importDir) }
+
 	go func () {
 
 		// fmt.Println("BoardManager: Started")
@@ -329,7 +374,7 @@ func startBoardManager() chan<- Command {
 			
 			// Log statistics
 			case "stat":
-				// fmt.Printf("Tickets=%d\n", len(Tickets))
+				fmt.Printf("Tickets=%d\n", len(Tickets))
 
 			// Debugging
 			default:
@@ -372,12 +417,12 @@ func createHandler(thisHandler func(http.ResponseWriter, *http.Request)) http.Ha
 
 func main() {
 	portVar    := flag.String("port", "8000", "a string")
-	quietVar   := flag.Bool("quiet", false, "a bool")
+	importVar  := flag.String("import", "", "a string")
 	verboseVar := flag.Bool("verbose", false, "a bool")
 	flag.Parse()
 
-	cmdchan := startBoardManager()
-	var server Server = Server {Commands: cmdchan, quiet: *quietVar, verbose: *verboseVar}
+	cmdchan := startBoardManager(*importVar)
+	var server Server = Server {Commands: cmdchan, verbose: *verboseVar}
 	http.HandleFunc("/add", createHandler(server.add))
 	http.HandleFunc("/list", createHandler(server.list))
 	http.HandleFunc("/get", createHandler(server.get))

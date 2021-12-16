@@ -15,7 +15,9 @@ All tickets are stored in memory in a map based on the id. The operations of the
 
 ## Running the Server
 
-`.\ticketserver.exe`
+The server may be launched by running the executable with the desired combination of flags. The below command will display all available flags.
+
+`.\ticketserver.exe -h` 
 
 ### Add
 
@@ -36,3 +38,9 @@ To get a list of all tickets, issue a `GET` request to the `/list` endpoint. The
 ### Update
 
 To update a ticket, issue a `POST` request to the `/list` endpoint. In the PostData, specify the JSON encoded modified ticket. The id must match an existing ticket or the server will return an error.
+
+### Export
+
+To export all tickets to disk, issue a `GET` request to the `/get` endpoint. In the URL query parameters, specify the `export` operation.
+
+`/get?op=export`
